@@ -1,57 +1,68 @@
 import socket
 import logging
-import time
-from constants import SERVER_HOST, PORT, SYN, ACK, SYN_ACK, BUFFER_SIZE
+from constants import SERVER_HOST, PORT, ACK, NAK, DATA, RCV_WINDOW, MAX_PACKETS, BUFFER_SIZE
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 class Server:
     """
-    TCP Simulation Server: Accepts connections and handles handshake process.
+    TCP Simulation Server: Handles data transmission, acknowledgment, and retransmissions.
     """
 
     def __init__(self, host=SERVER_HOST, port=PORT):
         self.host = host
         self.port = port
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # Create a TCP socket
-        self.socket.bind((self.host, self.port))  # Bind to address
-        self.socket.listen(5)  # Listen for incoming connections
-        self.socket.settimeout(1.0)  # Set a timeout to allow graceful shutdown
-        logging.info(f"Server started. Listening on {self.host}:{self.port}...")
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.bind((self.host, self.port))
+        self.socket.listen(5)
+        logging.info(f"Server listening on {self.host}:{self.port}...")
 
     def start(self):
         """
-        Starts the server and listens for clients. Press Ctrl+C to stop.
+        Starts the server and listens for incoming connections.
         """
         try:
             while True:
+                client_socket, client_address = self.socket.accept()
+                logging.info(f"Client {client_address} connected.")
+
                 try:
-                    client_socket, client_address = self.socket.accept()
-                    logging.info(f"Connection attempt from {client_address}")
+                    num_packets = int(client_socket.recv(BUFFER_SIZE).decode())  # Get requested packet count
+                    logging.info(f"Client requested {num_packets} packets.")
 
-                    # Step 1: Receive SYN
-                    syn_request = client_socket.recv(BUFFER_SIZE).decode()
-                    if syn_request == SYN:
-                        logging.info("Received SYN. Sending SYN-ACK...")
+                    for seq_num in range(1, num_packets + 1):
+                        if seq_num % RCV_WINDOW == 0:
+                            logging.info("Server waiting for ACK before sending more data...")
 
-                        # Step 2: Send SYN-ACK
-                        client_socket.send(SYN_ACK.encode())
+                        # Send data packet
+                        client_socket.send(f"{DATA}:{seq_num}".encode())
+                        logging.info(f"Sent packet {seq_num}")
 
-                        # Step 3: Receive final ACK
-                        final_ack = client_socket.recv(BUFFER_SIZE).decode()
-                        if final_ack == ACK:
-                            logging.info("Received ACK. Connection established successfully!")
-                        else:
-                            logging.warning("Did not receive expected ACK. Closing connection.")
+                        try:
+                            # Wait for ACK or NAK (with timeout)
+                            client_socket.settimeout(3)
+                            response = client_socket.recv(BUFFER_SIZE).decode()
+                            
+                            if response.startswith(NAK):
+                                logging.warning(f"Retransmitting lost packet {seq_num}...")
+                                client_socket.send(f"{DATA}:{seq_num}".encode())
+                            elif response.startswith(ACK):
+                                logging.info(f"Packet {seq_num} acknowledged.")
 
-                    client_socket.close()
+                        except socket.timeout:
+                            logging.warning(f"No response for packet {seq_num}. Assuming client disconnected.")
+                            break
+
+                except (ConnectionAbortedError, ConnectionResetError):
+                    logging.error("Client disconnected unexpectedly.")
                 
-                except socket.timeout:
-                    continue  # Timeout reached, continue checking for shutdown
+                finally:
+                    client_socket.close()
+                    logging.info("Closed client connection.")
 
         except KeyboardInterrupt:
-            logging.info("\nServer is shutting down gracefully...")
+            logging.info("Server shutting down...")
             self.stop()
 
     def stop(self):
