@@ -1,7 +1,7 @@
 # constants.py
 
 # Network Configuration
-SERVER_HOST = "127.0.0.1"  # Localhost for testing
+SERVER_HOST = "127.0.0.1"  # Default IP address for server
 PORT = 12345  # Default port for communication
 
 # Packet Flags
@@ -19,3 +19,6 @@ BUFFER_SIZE = 1024  # Packet buffer size in bytes
 RCV_WINDOW = 3  # Receive window size (how many packets client can handle at once)
 MAX_PACKETS = 10  # Maximum packets the server can send
 PACKET_LOSS_PROBABILITY = 0.2  # 20% chance of packet loss for simulation
+
+# TCP TIME_WAIT simulation
+TIME_WAIT = 30  # 30 seconds before final socket closure (simulating real TCP behavior)
