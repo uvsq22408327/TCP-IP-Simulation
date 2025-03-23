@@ -1,24 +1,15 @@
-# constants.py
+DEFAULT_TIMEOUT = 5  # secondes
+DEFAULT_WINDOW_SIZE = 5  # taille de la fenêtre de réception
+DEFAULT_PACKET_SIZE = 1024  # octets
+CLOSE_WAIT_TIMEOUT = 30  # secondes
+SERVER_PORT = 12345
+LOCALHOST = "127.0.0.1"
 
-# Network Configuration
-SERVER_HOST = "127.0.0.1"  # Default IP address for server
-PORT = 12345  # Default port for communication
-
-# Packet Flags
+# Types de paquets
 SYN = "SYN"
+SYN_ACK = "SYN_ACK"
 ACK = "ACK"
-SYN_ACK = "SYN-ACK"
-FIN = "FIN"
-FIN_ACK = "FIN-ACK"
+NACK = "NACK"
 DATA = "DATA"
-NAK = "NAK"  # Negative acknowledgment for lost/corrupt packets
-
-# Timeout & Flow Control
-TIMEOUT = 5  # Client timeout in seconds
-BUFFER_SIZE = 1024  # Packet buffer size in bytes
-RCV_WINDOW = 3  # Receive window size (how many packets client can handle at once)
-MAX_PACKETS = 10  # Maximum packets the server can send
-PACKET_LOSS_PROBABILITY = 0.2  # 20% chance of packet loss for simulation
-
-# TCP TIME_WAIT simulation
-TIME_WAIT = 30  # 30 seconds before final socket closure (simulating real TCP behavior)
+FIN = "FIN"
+FIN_ACK = "FIN_ACK"

@@ -1,146 +1,161 @@
+from packet import Packet
+from constants import *
 import socket
 import time
-import logging
-from constants import SERVER_HOST, PORT, SYN, ACK, SYN_ACK, FIN, FIN_ACK, TIME_WAIT, TIMEOUT, DATA, NAK, RCV_WINDOW
-from packet import Packet
-
-# Configure logging (UTF-8 to avoid Windows console encoding issues)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("log.txt", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
+import threading
+import random
+import queue
 
 class Client:
-    """
-    TCP Simulation Client: Handles connection, data request, acknowledgment, retransmissions, and disconnection.
-    """
-
-    def __init__(self, server_ip=SERVER_HOST, port=PORT):
-        self.server_ip = server_ip
-        self.port = port
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.settimeout(TIMEOUT)
-
+    def __init__(self, server_address, server_port, timeout=DEFAULT_TIMEOUT, window_size=DEFAULT_WINDOW_SIZE):
+        self.server_address = server_address
+        self.server_port = server_port
+        self.socket = None
+        self.timeout = timeout
+        self.window_size = window_size
+        self.connected = False
+        self.log_queue = queue.Queue()
+        
+    def log(self, message):
+        self.log_queue.put(f"[CLIENT] {message}")
+        print(f"[CLIENT] {message}")
+        
     def connect(self):
-        """
-        Establishes a connection with the server using the TCP 3-way handshake (SYN, SYN-ACK, ACK).
-        """
         try:
-            self.socket.connect((self.server_ip, self.port))
-            logging.info(f"Attempting to connect to {self.server_ip}:{self.port}...")
-
-            # Step 1: Send SYN
-            logging.info("Sending SYN request...")
-            self.socket.send(SYN.encode())
-
-            # Step 2: Receive SYN-ACK
-            response = self.socket.recv(1024).decode()
-            if response == SYN_ACK:
-                logging.info("Received SYN-ACK from server. Sending ACK...")
-
-                # Step 3: Send ACK
-                self.socket.send(ACK.encode())
-                logging.info("Connection established successfully!")
-
+            # Création du socket
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(self.timeout)
+            
+            # Étape 1: Ouverture de la connexion
+            self.log(f"Connexion au serveur {self.server_address}:{self.server_port}")
+            self.socket.connect((self.server_address, self.server_port))
+            
+            # Envoi du paquet SYN
+            syn_packet = Packet(SYN)
+            self.socket.sendall(syn_packet.to_bytes())
+            self.log(f"Envoi du paquet {syn_packet}")
+            
+            # Attente du SYN_ACK
+            response = self.socket.recv(DEFAULT_PACKET_SIZE)
+            syn_ack_packet = Packet.from_bytes(response)
+            
+            if syn_ack_packet and syn_ack_packet.packet_type == SYN_ACK:
+                self.log(f"Reçu {syn_ack_packet}")
+                self.connected = True
+                return True
             else:
-                logging.warning("Unexpected response from server. Connection failed.")
-
+                self.log("Échec de la connexion: pas de SYN_ACK reçu")
+                self.socket.close()
+                return False
+                
         except socket.timeout:
-            logging.error("Connection attempt timed out.")
+            self.log("Timeout lors de la tentative de connexion")
+            if self.socket:
+                self.socket.close()
+            return False
         except Exception as e:
-            logging.error(f"An error occurred: {e}")
-
-    def request_data(self):
-        """
-        Dynamically requests a number of packets from the server and handles retransmissions.
-        """
+            self.log(f"Erreur lors de la connexion: {str(e)}")
+            if self.socket:
+                self.socket.close()
+            return False
+    
+    def request_data(self, num_packets):
+        if not self.connected or not self.socket:
+            self.log("Pas de connexion active")
+            return False
+            
         try:
-            num_packets = int(input("Enter the number of packets to request: "))  # User input
-            if num_packets <= 0:
-                logging.error("Number of packets must be greater than 0.")
-                return
-
-            self.socket.send(str(num_packets).encode())  # Send packet request
-            logging.info(f"Requested {num_packets} packets from server.")
-
-            for _ in range(num_packets):
-                try:
-                    response = self.socket.recv(1024).decode()
+            # Étape 2: Transfert des données
+            # Envoi de la demande de données avec la taille de fenêtre
+            request_packet = Packet(DATA, seq_num=0, data=str(num_packets), window_size=self.window_size)
+            self.socket.sendall(request_packet.to_bytes())
+            self.log(f"Demande de {num_packets} paquets, fenêtre de taille {self.window_size}")
+            
+            packets_received = 0
+            expected_seq = 1
+            
+            # Réception des données
+            while packets_received < num_packets:
+                self.log(f"En attente du paquet {expected_seq}/{num_packets}")
+                data = self.socket.recv(DEFAULT_PACKET_SIZE)
+                packet = Packet.from_bytes(data)
+                
+                if not packet:
+                    self.log("Paquet invalide reçu")
+                    continue
                     
-                    if response.startswith(DATA):
-                        seq_num = int(response.split(":")[1])  # Extract sequence number
-                        
-                        packet = Packet(seq_num, 0, DATA)
-                        packet.mark_sent()  # Track when the packet was sent
-
-                        # Simulate possible packet loss
-                        if Packet.simulate_packet_loss():
-                            logging.warning(f"Packet {seq_num} lost! Sending NAK...")
-                            self.socket.send(f"{NAK}:{seq_num}".encode())
+                self.log(f"Reçu {packet}")
+                
+                # Simulation d'une erreur aléatoire (environ 10% de chance)
+                if random.random() < 0.1:
+                    self.log(f"Simulation d'une erreur pour le paquet {packet.seq_num}")
+                    nack = Packet(NACK, seq_num=packet.seq_num)
+                    self.socket.sendall(nack.to_bytes())
+                    self.log(f"Envoi {nack}")
+                else:
+                    # Si le numéro de séquence est correct
+                    if packet.seq_num == expected_seq:
+                        ack = Packet(ACK, seq_num=packet.seq_num)
+                        self.socket.sendall(ack.to_bytes())
+                        self.log(f"Envoi {ack}")
+                        expected_seq += 1
+                        packets_received += 1
+                    else:
+                        # Si c'est une retransmission
+                        if packet.seq_num < expected_seq:
+                            ack = Packet(ACK, seq_num=packet.seq_num)
+                            self.socket.sendall(ack.to_bytes())
+                            self.log(f"Duplicate - Envoi {ack}")
                         else:
-                            logging.info(f"Received packet {seq_num}, sending ACK...")
-                            self.socket.send(f"{ACK}:{seq_num}".encode())
-                            packet.mark_received()  # Calculate RTT
-
-                except socket.timeout:
-                    logging.error("Timeout waiting for server response.")
-                    break
-
-        except ValueError:
-            logging.error("Invalid input. Please enter a valid number.")
-
+                            # Si on a reçu un paquet trop en avance
+                            nack = Packet(NACK, seq_num=expected_seq)
+                            self.socket.sendall(nack.to_bytes())
+                            self.log(f"Out of order - Envoi {nack}")
+            
+            self.log("Tous les paquets ont été reçus")
+            return True
+            
+        except socket.timeout:
+            self.log("Timeout lors de la réception des données")
+            return False
         except Exception as e:
-            logging.error(f"Error during data transfer: {e}")
-
+            self.log(f"Erreur lors de la réception des données: {str(e)}")
+            return False
+    
     def close_connection(self):
-        """
-        Gracefully terminates the connection using the TCP FIN handshake.
-        """
+        if not self.connected or not self.socket:
+            self.log("Pas de connexion active à fermer")
+            return
+            
         try:
-            logging.info("Sending FIN to close connection...")
-            self.socket.send(FIN.encode())
-
-            response = self.socket.recv(1024).decode()
-            if response == FIN_ACK:
-                logging.info("Received FIN-ACK from server. Sending final ACK...")
-                self.socket.send(ACK.encode())
-
-                logging.info(f"Entering TIME_WAIT state for {TIME_WAIT} seconds before closing connection...")
-                for i in range(TIME_WAIT, 0, -1):
-                    logging.info(f"Closing in {i} seconds...")
-                    time.sleep(1)  # Wait for 1 second and log countdown
-
-        except Exception as e:
-            logging.error(f"Error during connection termination: {e}")
-
-        finally:
+            # Étape 3: Fermeture de la connexion
+            # Envoi du paquet FIN
+            fin_packet = Packet(FIN)
+            self.socket.sendall(fin_packet.to_bytes())
+            self.log("Demande de fermeture de la connexion (FIN)")
+            
+            # Attente du FIN_ACK
+            response = self.socket.recv(DEFAULT_PACKET_SIZE)
+            fin_ack_packet = Packet.from_bytes(response)
+            
+            if fin_ack_packet and fin_ack_packet.packet_type == FIN_ACK:
+                self.log(f"Reçu {fin_ack_packet}")
+                
+                # Envoi du ACK final
+                ack_packet = Packet(ACK)
+                self.socket.sendall(ack_packet.to_bytes())
+                self.log("Envoi du ACK final")
+                
+                # Temporisateur de 30 secondes
+                self.log(f"Attente de {CLOSE_WAIT_TIMEOUT} secondes avant fermeture complète")
+                time.sleep(CLOSE_WAIT_TIMEOUT)
+                
+            self.log("Fermeture de la connexion")
             self.socket.close()
-            logging.info("Client connection closed.")
-
-    def display_metrics(self):
-        """
-        Displays performance metrics.
-        """
-        if Packet.total_packets_sent > 0:
-            loss_percentage = (Packet.total_lost_packets / Packet.total_packets_sent) * 100
-            avg_rtt = Packet.total_transmission_time / max(1, Packet.total_packets_sent)
-            logging.info("\n📊 Client Performance Metrics:")
-            logging.info(f"Total Packets Sent: {Packet.total_packets_sent}")
-            logging.info(f"Total Retransmissions: {Packet.total_retransmissions}")
-            logging.info(f"Packet Loss Rate: {loss_percentage:.2f}%")
-            logging.info(f"Average RTT: {avg_rtt:.4f} seconds")
-
-# Run the client
-if __name__ == "__main__":
-    ip = input("Enter server IP (press Enter for default 127.0.0.1): ") or SERVER_HOST
-    port = int(input(f"Enter server port (press Enter for default {PORT}): ") or PORT)
-
-    client = Client(ip, port)
-    client.connect()
-    client.request_data()
-    client.close_connection()
-    client.display_metrics()
+            self.connected = False
+            
+        except Exception as e:
+            self.log(f"Erreur lors de la fermeture: {str(e)}")
+            if self.socket:
+                self.socket.close()
+            self.connected = False
